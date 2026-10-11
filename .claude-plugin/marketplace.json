@@ -1,0 +1,6 @@
+{
+  "name": "work-meter-marketplace",
+  "owner": { "name": "ShangMing" },
+  "metadata": { "description": "work-meter：在 Claude Code 輸入框上方顯示工作進度與帳號額度剩餘" },
+  "plugins": [{ "name": "work-meter", "source": "./" }]
+}

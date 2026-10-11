@@ -1,0 +1,9 @@
+{
+  "name": "work-meter",
+  "version": "0.1.0",
+  "description": "顯示工作進度（任務清單、本回合狀態）與帳號額度剩餘（5 小時 / 7 天 rate limit、context、花費）",
+  "author": { "name": "ShangMing" },
+  "license": "MIT",
+  "repository": "https://github.com/evasuka/work-meter",
+  "types": "./types/index.d.ts"
+}

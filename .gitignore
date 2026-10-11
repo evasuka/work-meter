@@ -1,0 +1,3 @@
+# 開發時由 Claude Code 自動產生，不需要進版控
+/.claude-plugin/types/
+/tsconfig.json
