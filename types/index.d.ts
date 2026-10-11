@@ -22,6 +22,14 @@ export type MeterUsage = {
   costUsd?: number
 }
 
+export type MeterTok = { input: number; output: number; cacheRead: number; cacheWrite: number }
+
+// last: the most recent main-thread turn; session: every turn since the conversation began, subagents included.
+export type MeterTokens = { last: MeterTok | null; session: MeterTok }
+
+// Per rate-limit window kind: the lowest alert threshold already announced, null while above every threshold.
+export type MeterAlerts = Record<string, number | null>
+
 declare module 'claude-code' {
   interface PluginState {
     'work-meter': {
@@ -31,6 +39,8 @@ declare module 'claude-code' {
       usage: MeterUsage | null
       now: number
       isBandHidden: boolean
+      tokens: MeterTokens
+      alerted: MeterAlerts
     }
   }
 }

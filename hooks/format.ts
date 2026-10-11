@@ -1,4 +1,4 @@
-import type { MeterItem, MeterWindow } from '../types'
+import type { MeterItem, MeterTok, MeterWindow } from '../types'
 
 export function duration(ms: number): string {
   const s = Math.max(0, Math.round(ms / 1000))
@@ -19,6 +19,10 @@ export function tokens(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
   if (n >= 1000) return `${(n / 1000).toFixed(1)}k`
   return String(n)
+}
+
+export function breakdown(t: MeterTok): string {
+  return `輸入 ${tokens(t.input)} · 快取讀 ${tokens(t.cacheRead)} · 快取寫 ${tokens(t.cacheWrite)} · 輸出 ${tokens(t.output)}`
 }
 
 export function windowLabel(kind: string): string {

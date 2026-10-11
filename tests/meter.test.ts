@@ -1,46 +1,7 @@
-import type { On, RenderElement } from 'claude-code'
+import type { RenderElement } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
 
-const SURFACES = ['terminal', 'desktop'] as const
-
-const BAND = {
-  plugin: 'work-meter',
-  component: 'AbovePrompt',
-  props: {
-    hasSurvey: false,
-    isWorking: true,
-    maxRows: 10,
-    bodyColumns: 200,
-    scroll: { offset: 0, bodyRows: 10 },
-    view: {},
-  },
-} as const
-
-const PANE = {
-  plugin: 'work-meter',
-  component: 'Pane',
-  requestId: 'work-meter',
-  props: {
-    title: '工作進度與額度',
-    isFocused: false,
-    bodyColumns: 80,
-    placement: 'dock',
-    scroll: { offset: 0, bodyRows: 40 },
-    view: {},
-  },
-} as const
-
-// What sits beneath the plugins in a session: the engine echoes these events.
-function engine(on: On) {
-  on('turn.start', ($, e) => ({ turnId: e.turnId }))
-  on('session.measure', ($, e) => ({ changed: e.changed }))
-}
-
-const RUN = { origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 200 } } as const
-
-async function shown(ui: { findAll: (q: { type: string }) => Promise<{ text: string }[]> }) {
-  return (await ui.findAll({ type: 'Text' })).map(t => t.text).join('\n')
-}
+import { BAND, engine, PANE, RUN, shown, SURFACES } from './helpers'
 
 test('tasks and the running turn show as progress', async ($, on) => {
   engine(on)
@@ -128,6 +89,7 @@ test('rate-limit windows show what is left and when they reset', async ($, on) =
 })
 
 test('/meter hide and show toggle the band', async ($, on) => {
+  mock.clock(on, { now: Date.parse('2026-10-10T00:00:00Z') })
   engine(on)
   on('ui.render', { component: 'AbovePrompt' }, ($, e) => {
     const { Text } = $.ui.resolve(e)
