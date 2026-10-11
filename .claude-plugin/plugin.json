@@ -1,9 +1,35 @@
 {
   "name": "work-meter",
-  "version": "0.1.0",
-  "description": "顯示工作進度（任務清單、本回合狀態）與帳號額度剩餘（5 小時 / 7 天 rate limit、context、花費）",
+  "version": "0.2.0",
+  "description": "顯示工作進度（任務清單、本回合狀態）與帳號額度剩餘（5 小時 / 7 天 rate limit、context、花費、token 數），並在額度偏低時提醒",
   "author": { "name": "ShangMing" },
   "license": "MIT",
   "repository": "https://github.com/evasuka/work-meter",
-  "types": "./types/index.d.ts"
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "alerts": {
+      "type": "boolean",
+      "title": "額度警示",
+      "description": "剩餘額度低於門檻時提醒一次，額度恢復時也會提醒。",
+      "default": true
+    },
+    "alertThresholds": {
+      "type": "string",
+      "title": "警示門檻（剩餘 %）",
+      "description": "以逗號分隔、由大到小，例如 20,10。",
+      "default": "20,10"
+    },
+    "showTokens": {
+      "type": "boolean",
+      "title": "顯示 token 數",
+      "description": "在橫條與面板顯示上回合與本 session 的 token 數。",
+      "default": true
+    },
+    "longTurnNotifySeconds": {
+      "type": "number",
+      "title": "長回合通知（秒）",
+      "description": "回合耗時超過這個秒數時，透過你自己的通知管道提醒；0 表示關閉。需要先在 /config 設定通知管道。",
+      "default": 0
+    }
+  }
 }

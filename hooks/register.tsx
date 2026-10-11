@@ -2,8 +2,10 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, SessionUsage } from 'claude-code'
 
 import type { MeterItem, MeterUsage } from '../types'
+import { parseThresholds, planAlerts } from './alerts'
 import {
   bar,
+  breakdown,
   describeTool,
   duration,
   pad,
@@ -14,9 +16,11 @@ import {
   tokens,
   windowLabel,
 } from './format'
+import { EMPTY_TOKENS, recordTurn, total } from './tokens'
 
 const PANE = 'work-meter'
 const PANE_TITLE = '工作進度與額度'
+const ALERT_TOAST_MS = 10_000
 
 const items = atom({ plugin: 'work-meter', key: 'items' } as const, [])
 const turn = atom({ plugin: 'work-meter', key: 'turn' } as const, null)
@@ -24,6 +28,8 @@ const running = atom({ plugin: 'work-meter', key: 'running' } as const, [])
 const usage = atom({ plugin: 'work-meter', key: 'usage' } as const, null)
 const now = atom({ plugin: 'work-meter', key: 'now' } as const, 0)
 const isBandHidden = atom({ plugin: 'work-meter', key: 'isBandHidden' } as const, false)
+const spent = atom({ plugin: 'work-meter', key: 'tokens' } as const, EMPTY_TOKENS)
+const alerted = atom({ plugin: 'work-meter', key: 'alerted' } as const, {})
 
 function toUsage(u: Pick<SessionUsage, 'context' | 'rateLimits' | 'cost'>): MeterUsage {
   return {
@@ -53,7 +59,13 @@ async function tick($: EngineInterface) {
   }
 }
 
-export const register: Register = on => {
+export const register: Register = (on, options) => {
+  const isAlertOn = options.alerts !== false
+  const levels = parseThresholds(String(options.alertThresholds ?? ''))
+  const isTokenShown = options.showTokens !== false
+  const longTurnSeconds = Number(options.longTurnNotifySeconds)
+  const longTurnMs = Number.isFinite(longTurnSeconds) && longTurnSeconds > 0 ? longTurnSeconds * 1000 : 0
+
   on('session.start', async ($, e, next) => {
     await $.command.register({
       name: 'meter',
@@ -84,6 +96,13 @@ export const register: Register = on => {
     const measured = toUsage(e)
     await update($, usage, () => measured)
 
+    if (isAlertOn) {
+      const t = await $.clock.now()
+      const plan = planAlerts(await read($, alerted), measured.windows, levels, t)
+      await update($, alerted, () => plan.next)
+      for (const message of plan.messages) $.ui.toast(message, { timeoutMs: ALERT_TOAST_MS })
+    }
+
     return next(e)
   })
 
@@ -97,10 +116,23 @@ export const register: Register = on => {
   })
 
   on('turn.complete', async ($, e, next) => {
+    await update($, spent, prev => recordTurn(prev, e.usage, e.agentId === undefined))
     if (e.agentId !== undefined) return next(e)
     const t = await $.clock.now()
     await update($, turn, prev => (prev === null ? null : { ...prev, endedAt: t }))
     await update($, running, () => [])
+
+    if (longTurnMs > 0 && !e.isAborted && e.durationMs >= longTurnMs) {
+      // Goes through the person's own notification channel; "not sent" (no channel set up) is fine.
+      await $.ui.notify(`回合完成（耗時 ${duration(e.durationMs)}）`, { title: 'work-meter' })
+    }
+
+    return next(e)
+  })
+
+  // A /clear starts a new conversation in the same process: its token totals start over.
+  on('session.end', async ($, e, next) => {
+    if (e.reason === 'clear') await update($, spent, () => EMPTY_TOKENS)
 
     return next(e)
   })
@@ -199,6 +231,7 @@ export const register: Register = on => {
     const u = await read($, usage)
     const t = await read($, now)
     const calls = await read($, running)
+    const spentTokens = await read($, spent)
     const hasWork = list.length > 0 || current !== null
     if (!hasWork && u === null) return next(e)
 
@@ -206,12 +239,17 @@ export const register: Register = on => {
     const p = progress(list)
     const isWorking = current !== null && current.endedAt === undefined
     const tool = calls.at(-1)
-    const turnText =
+    const turnBase =
       current === null
         ? ''
         : isWorking
           ? `工作中 ${duration(t - current.startedAt)} · 工具 ${current.tools} 次${tool ? ` · ${tool.label}` : ''}`
           : `上回合 ${duration((current.endedAt ?? t) - current.startedAt)} · 工具 ${current.tools} 次`
+    const lastTokens =
+      isTokenShown && !isWorking && spentTokens.last !== null ? ` · ${tokens(total(spentTokens.last))} tok` : ''
+    const sessionTokens =
+      isTokenShown && total(spentTokens.session) > 0 ? ` │ 本 session ${tokens(total(spentTokens.session))} tok` : ''
+    const turnText = turnBase === '' ? '' : `${turnBase}${lastTokens}${sessionTokens}`
 
     return (
       <Box flexDirection="column">
@@ -265,9 +303,11 @@ export const register: Register = on => {
     const u = await read($, usage)
     const t = await read($, now)
     const calls = await read($, running)
+    const spentTokens = await read($, spent)
     const p = progress(list)
     const width = Math.min(24, Math.max(8, e.props.bodyColumns - 34))
     const isWorking = current !== null && current.endedAt === undefined
+    const hasTokens = isTokenShown && (spentTokens.last !== null || total(spentTokens.session) > 0)
 
     return (
       <Box flexDirection="column">
@@ -304,6 +344,12 @@ export const register: Register = on => {
         {calls.map(c => (
           <Text dimColor wrap="truncate-end">{`  執行中：${c.label}`}</Text>
         ))}
+        {hasTokens && <Text> </Text>}
+        {hasTokens && <Text bold>Token</Text>}
+        {hasTokens && spentTokens.last !== null && (
+          <Text wrap="truncate-end">{`上回合    ${breakdown(spentTokens.last)}`}</Text>
+        )}
+        {hasTokens && <Text wrap="truncate-end">{`本 session ${breakdown(spentTokens.session)}`}</Text>}
         <Text> </Text>
         <Text bold>帳號額度</Text>
         {u === null || (u.windows.length === 0 && u.contextPercent === undefined) ? (
