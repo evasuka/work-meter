@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, SessionUsage } from 'claude-code'
 
-import type { MeterItem, MeterUsage } from '../types'
+import type { MeterGuard, MeterItem, MeterUsage } from '../types'
 import { parseThresholds, planAlerts } from './alerts'
 import {
   bar,
@@ -16,11 +16,15 @@ import {
   tokens,
   windowLabel,
 } from './format'
+import { isBlocking, lifted, OPEN, pauseReason, planGuard, resumed } from './guard'
 import { EMPTY_TOKENS, recordTurn, total } from './tokens'
 
 const PANE = 'work-meter'
 const PANE_TITLE = '工作進度與額度'
 const ALERT_TOAST_MS = 10_000
+const LIFT_MARGIN_MS = 5_000
+const PAUSE_LABEL = '暫停到重置（建議）'
+const CONTINUE_LABEL = '繼續使用 extra usage'
 
 const items = atom({ plugin: 'work-meter', key: 'items' } as const, [])
 const turn = atom({ plugin: 'work-meter', key: 'turn' } as const, null)
@@ -30,6 +34,7 @@ const now = atom({ plugin: 'work-meter', key: 'now' } as const, 0)
 const isBandHidden = atom({ plugin: 'work-meter', key: 'isBandHidden' } as const, false)
 const spent = atom({ plugin: 'work-meter', key: 'tokens' } as const, EMPTY_TOKENS)
 const alerted = atom({ plugin: 'work-meter', key: 'alerted' } as const, {})
+const guard = atom({ plugin: 'work-meter', key: 'guard' } as const, OPEN)
 
 function toUsage(u: Pick<SessionUsage, 'context' | 'rateLimits' | 'cost'>): MeterUsage {
   return {
@@ -59,18 +64,65 @@ async function tick($: EngineInterface) {
   }
 }
 
+// The five-hour window reset: lift the pause it caused (not a later one).
+async function liftAtReset($: EngineInterface, resetsAt: string | undefined) {
+  const before = await read($, guard)
+  const after = lifted(before, resetsAt)
+  if (after === before) return
+  await update($, guard, () => after)
+  $.ui.toast('5 小時額度已重置，已恢復工作。', { timeoutMs: ALERT_TOAST_MS })
+}
+
+// Dismissed, or nobody to answer: the safe default is to stay paused.
+async function askWhatToDo($: EngineInterface) {
+  let answer: string
+  try {
+    answer = await $.ui.ask('5 小時額度已用完，要暫停到重置，還是繼續使用（可能會使用 extra usage）？', [
+      PAUSE_LABEL,
+      CONTINUE_LABEL,
+    ])
+  } catch {
+    return
+  }
+  if (answer === CONTINUE_LABEL) await update($, guard, prev => (prev.paused ? resumed(prev) : prev))
+}
+
+// Stop the running turn first: a dialog waiting for an answer must not leave it burning extra usage.
+async function engageGuard($: EngineInterface, paused: MeterGuard, t: number, shouldAsk: boolean) {
+  const current = await read($, turn)
+  if (current !== null && current.endedAt === undefined) {
+    try {
+      await $.turn.abort({ turnId: current.id })
+    } catch {
+      // The turn was no longer the running one; the pause still stands.
+    }
+    // An aborted turn may raise no turn.complete: end it here so the band stops counting.
+    await update($, turn, prev => (prev === null || prev.endedAt !== undefined ? prev : { ...prev, endedAt: t }))
+    await update($, running, () => [])
+  }
+  $.ui.toast(pauseReason(paused, t), { timeoutMs: ALERT_TOAST_MS })
+  const at = paused.resetsAt === undefined ? Number.NaN : Date.parse(paused.resetsAt)
+  if (!Number.isNaN(at)) {
+    $.clock.after(Math.max(0, at - t) + LIFT_MARGIN_MS, () => void liftAtReset($, paused.resetsAt))
+  }
+  if (shouldAsk) $.clock.after(0, () => void askWhatToDo($))
+}
+
 export const register: Register = (on, options) => {
   const isAlertOn = options.alerts !== false
   const levels = parseThresholds(String(options.alertThresholds ?? ''))
   const isTokenShown = options.showTokens !== false
   const longTurnSeconds = Number(options.longTurnNotifySeconds)
   const longTurnMs = Number.isFinite(longTurnSeconds) && longTurnSeconds > 0 ? longTurnSeconds * 1000 : 0
+  const limitAction = options.limitAction === 'pause' || options.limitAction === 'off' ? options.limitAction : 'ask'
+  const pauseAt = Number(options.pauseAtUsed)
+  const pauseAtUsed = Number.isFinite(pauseAt) && pauseAt >= 1 && pauseAt <= 100 ? pauseAt : 100
 
   on('session.start', async ($, e, next) => {
     await $.command.register({
       name: 'meter',
-      description: '開啟工作進度與帳號額度面板；/meter hide|show 切換上方橫條',
-      argumentHint: '[hide|show]',
+      description: '開啟工作進度與帳號額度面板；/meter hide|show 切換橫條，resume 在額度用完暫停後繼續',
+      argumentHint: '[hide|show|resume]',
     })
     const measured = toUsage(await $.session.usage())
     await update($, usage, () => measured)
@@ -86,6 +138,11 @@ export const register: Register = (on, options) => {
     if (arg === 'hide' || arg === 'show') {
       await update($, isBandHidden, () => arg === 'hide')
       return { text: arg === 'hide' ? '已隱藏工作進度橫條（/meter show 可再顯示）。' : '已顯示工作進度橫條。' }
+    }
+    if (arg === 'resume') {
+      if (!(await read($, guard)).paused) return { text: '目前沒有暫停。' }
+      await update($, guard, resumed)
+      return { text: '已繼續工作，這個額度視窗內不會再自動暫停。' }
     }
     const opened = await $.ui.open({ id: PANE, title: PANE_TITLE })
 
@@ -103,12 +160,19 @@ export const register: Register = (on, options) => {
       for (const message of plan.messages) $.ui.toast(message, { timeoutMs: ALERT_TOAST_MS })
     }
 
+    if (limitAction !== 'off') {
+      const t = await $.clock.now()
+      const plan = planGuard(await read($, guard), measured.windows, pauseAtUsed, t)
+      if (plan.engage || plan.release) await update($, guard, () => plan.next)
+      if (plan.engage) await engageGuard($, plan.next, t, limitAction === 'ask')
+    }
+
     return next(e)
   })
 
   on('turn.start', async ($, e, next) => {
     const t = await $.clock.now()
-    await update($, turn, () => ({ startedAt: t, tools: 0 }))
+    await update($, turn, () => ({ id: e.turnId, startedAt: t, tools: 0 }))
     await update($, running, () => [])
     await update($, now, () => t)
 
@@ -126,6 +190,20 @@ export const register: Register = (on, options) => {
       // Goes through the person's own notification channel; "not sent" (no channel set up) is fine.
       await $.ui.notify(`回合完成（耗時 ${duration(e.durationMs)}）`, { title: 'work-meter' })
     }
+
+    return next(e)
+  })
+
+  // While paused, nothing may start a model turn.
+  on('prompt.submit', async ($, e, next) => {
+    const state = await read($, guard)
+    if (!state.paused) return next(e)
+
+    const t = await $.clock.now()
+    if (isBlocking(state, limitAction, t)) return { drop: pauseReason(state, t) }
+
+    // Not blocking although a pause is on record: its window has reset (the timer may have been lost in a reload).
+    if (limitAction !== 'off') await liftAtReset($, state.resetsAt)
 
     return next(e)
   })
@@ -232,13 +310,17 @@ export const register: Register = (on, options) => {
     const t = await read($, now)
     const calls = await read($, running)
     const spentTokens = await read($, spent)
+    const guardState = await read($, guard)
+    const isPaused = isBlocking(guardState, limitAction, t)
     const hasWork = list.length > 0 || current !== null
-    if (!hasWork && u === null) return next(e)
+    if (!hasWork && u === null && !isPaused) return next(e)
 
     const { Box, Text } = $.ui.resolve(e)
     const p = progress(list)
     const isWorking = current !== null && current.endedAt === undefined
     const tool = calls.at(-1)
+    const pausedAt = guardState.resetsAt === undefined ? Number.NaN : Date.parse(guardState.resetsAt)
+    const pausedReset = Number.isNaN(pausedAt) ? '' : `（${duration(pausedAt - t)}後重置）`
     const turnBase =
       current === null
         ? ''
@@ -253,6 +335,11 @@ export const register: Register = (on, options) => {
 
     return (
       <Box flexDirection="column">
+        {isPaused && (
+          <Text key="paused" color="warning" bold wrap="truncate-end">
+            {`⏸ 已暫停：5 小時額度已用完${pausedReset}，輸入 /meter resume 可繼續`}
+          </Text>
+        )}
         {hasWork && (
           <Text key="work" wrap="truncate-end">
             {p.total > 0 && (

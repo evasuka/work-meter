@@ -33,9 +33,27 @@ export const RUN = { origin: { kind: 'composer' }, presentation: { isFullscreen:
 
 // What sits beneath the plugins in a session: the engine echoes these events, and the
 // test keeps what reached the screen (toasts) and the person's notification channel (notices).
-export function engine(on: On) {
+// `abort: 'deny'` makes turn.abort reject, as it does when the turn is not the running one.
+// `ask` is which option the person picks in a dialog, the first or the second; left out, the dialog is dismissed.
+export function engine(on: On, opts: { abort?: 'ok' | 'deny'; ask?: 'first' | 'second' } = {}) {
   const toasts: string[] = []
   const notices: string[] = []
+  const aborts: string[] = []
+  const asks: { question: string; labels: string[] }[] = []
+  on('turn.abort', ($, e) => {
+    aborts.push(e.turnId)
+    return opts.abort === 'deny' ? { deny: 'not the running turn' } : { value: undefined }
+  })
+  on('prompt.submit', ($, e) => ({ text: e.text }))
+  on('tool.call', { tool: 'AskUserQuestion' }, ($, e) => {
+    const q = e.questions[0]
+    if (q === undefined) return { deny: 'no question' }
+    asks.push({ question: q.question, labels: q.options.map(o => o.label) })
+    const picked = q.options[opts.ask === 'second' ? 1 : 0]
+    return opts.ask === undefined || picked === undefined
+      ? { deny: 'dismissed' }
+      : { result: { questions: e.questions, answers: { [q.question]: picked.label } } }
+  })
   on('turn.start', ($, e) => ({ turnId: e.turnId }))
   on('turn.complete', ($, e) => ({ text: e.answer }))
   on('session.measure', ($, e) => ({ changed: e.changed }))
@@ -48,7 +66,7 @@ export function engine(on: On) {
     notices.push(e.text)
     return { value: { isSent: true, channel: 'kitty' } }
   })
-  return { toasts, notices }
+  return { toasts, notices, aborts, asks }
 }
 
 export async function shown(ui: { findAll: (q: { type: string }) => Promise<{ text: string }[]> }) {

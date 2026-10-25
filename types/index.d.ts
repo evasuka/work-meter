@@ -8,7 +8,8 @@ export type MeterItem = {
   source: 'task' | 'todo'
 }
 
-export type MeterTurn = { startedAt: number; endedAt?: number; tools: number }
+// id: the main-loop turn's id from turn.start, which turn.abort needs.
+export type MeterTurn = { id: string; startedAt: number; endedAt?: number; tools: number }
 
 export type MeterRunning = { id: string; label: string }
 
@@ -30,6 +31,11 @@ export type MeterTokens = { last: MeterTok | null; session: MeterTok }
 // Per rate-limit window kind: the lowest alert threshold already announced, null while above every threshold.
 export type MeterAlerts = Record<string, number | null>
 
+// paused: new prompts are refused until the five-hour window resets or the person resumes.
+// resetsAt: when the window that caused the pause resets.
+// overriddenFor: the window ('unknown' when it has no reset time) the person chose to keep working in.
+export type MeterGuard = { paused: boolean; resetsAt?: string; overriddenFor?: string }
+
 declare module 'claude-code' {
   interface PluginState {
     'work-meter': {
@@ -41,6 +47,7 @@ declare module 'claude-code' {
       isBandHidden: boolean
       tokens: MeterTokens
       alerted: MeterAlerts
+      guard: MeterGuard
     }
   }
 }

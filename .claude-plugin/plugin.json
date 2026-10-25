@@ -1,7 +1,7 @@
 {
   "name": "work-meter",
-  "version": "0.2.0",
-  "description": "顯示工作進度（任務清單、本回合狀態）與帳號額度剩餘（5 小時 / 7 天 rate limit、context、花費、token 數），並在額度偏低時提醒",
+  "version": "0.3.0",
+  "description": "顯示工作進度（任務清單、本回合狀態）與帳號額度剩餘（5 小時 / 7 天 rate limit、context、花費、token 數），額度偏低時提醒，5 小時額度用完時可暫停工作以避免 extra usage",
   "author": { "name": "ShangMing" },
   "license": "MIT",
   "repository": "https://github.com/evasuka/work-meter",
@@ -30,6 +30,19 @@
       "title": "長回合通知（秒）",
       "description": "回合耗時超過這個秒數時，透過你自己的通知管道提醒；0 表示關閉。需要先在 /config 設定通知管道。",
       "default": 0
+    },
+    "limitAction": {
+      "type": "string",
+      "title": "5 小時額度用完時",
+      "description": "ask：先中止進行中的回合並暫停，再問你要暫停還是繼續；pause：直接暫停；off：不處理。",
+      "default": "ask",
+      "options": ["ask", "pause", "off"]
+    },
+    "pauseAtUsed": {
+      "type": "number",
+      "title": "觸發暫停的 5 小時已用 %",
+      "description": "5 小時額度已用到這個百分比（1 到 100）就觸發；預設 100。調低可以提早暫停，也方便測試。",
+      "default": 100
     }
   }
 }
